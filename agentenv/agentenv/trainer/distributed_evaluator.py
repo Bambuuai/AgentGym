@@ -18,7 +18,8 @@ from agentenv.trainer.utils import set_seed
 from datasets import Dataset, DatasetDict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AdamW, GenerationConfig
+from transformers import GenerationConfig
+from torch.optim import AdamW
 
 
 class DistributedEvaluator(BaseTrainer):

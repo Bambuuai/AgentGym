@@ -12,7 +12,6 @@ import torch
 import wandb
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.utils import broadcast, gather_object
-from agentenv.controller import Agent
 from agentenv.controller.agent import Agent
 from agentenv.controller.task import BaseTask
 from agentenv.controller.utils import BaseTrainer
@@ -20,8 +19,10 @@ from agentenv.trainer.utils import set_seed
 from datasets import Dataset, DatasetDict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import GenerationConfig, get_linear_schedule_with_warmup
 from torch.optim import AdamW
+from transformers import GenerationConfig, get_linear_schedule_with_warmup
+from peft import LoraConfig, get_peft_model, TaskType
+
 
 class BCTrainer(BaseTrainer):
     def __init__(self, agent: Agent, tasks: Sequence[BaseTask], args) -> None:
@@ -217,7 +218,11 @@ class BCTrainer(BaseTrainer):
 
         def collate_fn(batch):
             result = {
-                "data_idxs": [int(item["item_id"].split("_")[-1]) for item in batch]
+                "data_idxs": [{
+                        "task": item["item_id"].split("_")[0],
+                        "id": int(item["item_id"].split("_")[-1])
+                    } for item in batch
+                ]
             }
             return result
 
@@ -248,7 +253,7 @@ class BCTrainer(BaseTrainer):
         Set the wandb.
         """
         # os.environ["WANDB_MODE"] = "offline"
-        if torch.distributed.get_rank() == 0 and self.args["wandb_log"]:
+        if self.args["wandb_log"]:
             wandb.init(
                 project=self.args["wandb_project"],
                 name=self.args["wandb_run_name"],
@@ -525,7 +530,13 @@ class BCTrainer(BaseTrainer):
             disable=not self.accelerator.is_main_process,
             desc="Evaluation Gen Loop",
         ):
-            data_idxs = batch["data_idxs"]
+            data_idxs = [[] for _ in range(len(self.tasks))]
+
+            for index in batch["data_idxs"]:
+                for j in range(len(self.tasks)):
+                    if self.tasks[j].env_name == index["task"]:
+                        data_idxs[j].append(index["id"])
+
             self.accelerator.print("==== Batch inference data idxs ====", data_idxs)
             with torch.no_grad():
                 exps = self.eval(
@@ -615,3 +626,149 @@ class BCTrainer(BaseTrainer):
             temperature=1.2,
             record_to_file=True,
         )
+
+
+
+from dataclasses import dataclass, field
+
+import transformers
+from agentenv.envs import (
+    AlfWorldTask,
+    SciworldTask,
+    TextCraftTask,
+    BabyAITask,
+    WebshopTask,
+)
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+@dataclass
+class TrainingArguments:
+    train_file: str = field(default="./dataset/train.json", metadata={"help": "Training dataset."})
+    inference_file: str = field(
+        default="./dataset/test.json", metadata={"help": "Inference dataset."}
+    )
+    test_file: str = field(default="./dataset/test.json", metadata={"help": "Test dataset."})
+    # model path
+    model_train_path: str = field(
+        default="mrRL/Affine-ofdt-k4",
+        metadata={"help": "Path of initial train model"},
+    )
+    model_save_path: str = field(
+        default="outputs/model",
+        metadata={"help": "Directory to save the trained model."},
+    )
+    task_name_list: list[str] = field(
+        default_factory=lambda: [
+            "webshop",
+            "alfworld",
+            "sciworld",
+            "textcraft",
+            "babyai",
+        ], metadata={"help": "Task name for evaluation"}
+    )
+    batch_size: int = field(
+        default=40,
+        metadata={"help": "Batch size for training."},
+    )
+    eval_batch_size: int = field(
+        default=8, metadata={"help": "Batch size for evaluation."}
+    )
+    n_epochs: int = field(default=40)
+    num_workers: int = field(
+        default=8, metadata={"help": "Number of subprocesses to use for data loading."}
+    )
+    learning_rate: float = field(default=2e-5, metadata={"help": "Learning rate."})
+    weight_decay: float = field(
+        default=1e-6, metadata={"help": "Weight decay for regularization."}
+    )
+    warmup_step: int = field(
+        default=0,
+        metadata={"help": "Number of warmup steps for learning rate scheduling."},
+    )
+    clip_grad_norm: float = field(
+        default=1, metadata={"help": "Gradient clipping threshold."}
+    )
+    gradient_accumulation_steps: int = field(default=1)
+    evaluating_epoch_freq: int = field(default=1)
+    logging_epoch_freq: int = field(default=1)
+    saving_epoch_freq: int = field(default=1)
+    logging_step_freq: int = field(default=None)
+    seed: int = field(default=42)
+    max_input_length: int = field(default=700)
+
+    # environment
+    max_round: int = field(
+        default=6,
+        metadata={"help": "Interaction rounds between agents and environment"},
+    )
+
+    # wandb stuff
+    wandb_log: bool = field(default=False)
+    wandb_project: str = field(default="AgentGym_behavioral_clone")
+    wandb_run_name: str = field(default="behavioral_clone")
+
+    # environment parameters
+    env_server_base_list: list[str] = field(default_factory=lambda:["http://127.0.0.1:36001", "http://127.0.0.1:36002", "http://127.0.0.1:36003", "http://127.0.0.1:36004", "http://127.0.0.1:36005"])
+    data_len: int = field(default=200)
+    timeout: int = field(default=2400)
+
+
+def main():
+    parser = transformers.HfArgumentParser(TrainingArguments)
+    (args,) = parser.parse_args_into_dataclasses()
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model_train_path)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_train_path, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16, device_map="auto"
+    )
+
+    lora_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,   # you're using the model as an LM / policy
+        r=16,                           # rank of the low-rank matrices
+        lora_alpha=32,                  # scaling factor
+        lora_dropout=0.05,               # dropout in the LoRA layers
+        target_modules=["q_proj", "v_proj"]  # or other module names to adapt
+    )
+
+    model.gradient_checkpointing_enable()
+
+    model = get_peft_model(model, lora_config)
+
+    # task_name - task dict
+    task_classes = {
+        "webshop": WebshopTask,
+        "alfworld": AlfWorldTask,
+        "sciworld": SciworldTask,
+        "textcraft": TextCraftTask,
+        "babyai": BabyAITask,
+    }
+
+    # select task according to the name
+    task_class_list = []
+    for i in range(len(args.task_name_list)):
+        task_class = task_classes.get(args.task_name_list[i].lower(), None) 
+        if task_classes is None:
+            raise ValueError(f"Unsupported task name: {args.task_name}")
+
+        # set environment parameters
+        env_args = {
+            "env_server_base": args.env_server_base_list[i],
+            "data_len": args.data_len,
+            "timeout": args.timeout,
+        }
+        task_class_list.append(task_class(client_args=env_args, n_clients=1))
+
+    trainer = BCTrainer(
+        Agent(model, tokenizer),
+        task_class_list,
+        args,
+    )
+
+    trainer.train()
+
+    model.save_pretrained()
+
+if __name__ == "__main__":
+    main()
+    
