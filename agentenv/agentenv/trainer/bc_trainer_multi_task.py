@@ -48,7 +48,7 @@ class BCTrainer(BaseTrainer):
 
         self.create_accelerator()
         self.set_seed()
-        self.setup_tokenizer()
+        # self.setup_tokenizer()
         self.get_raw_dataset()
         self.get_train_dataloader()
         self.get_inference_test_dataloader()
@@ -70,14 +70,14 @@ class BCTrainer(BaseTrainer):
         """
         set_seed(self.args["seed"] + self.accelerator.process_index)
 
-    def setup_tokenizer(self):
-        """
-        Setup the tokenizer.
-        """
-        self.agent.tokenizer.pad_token_id = 0
-        self.agent.tokenizer.eos_token_id = 2
-        self.accelerator.print(f"[Vocab size]: {len(self.agent.tokenizer)}")
-        self.agent.model.resize_token_embeddings(len(self.agent.tokenizer))
+    # def setup_tokenizer(self):
+    #     """
+    #     Setup the tokenizer.
+    #     """
+    #     self.agent.tokenizer.pad_token_id = 0
+    #     self.agent.tokenizer.eos_token_id = 2
+    #     self.accelerator.print(f"[Vocab size]: {len(self.agent.tokenizer)}")
+    #     self.agent.model.resize_token_embeddings(len(self.agent.tokenizer))
 
     def get_raw_dataset(self):
         with self.accelerator.main_process_first():
@@ -103,10 +103,7 @@ class BCTrainer(BaseTrainer):
 
         def tokenize_fn(batch, args, tokenizer):
             # tokenizer.chat_template = "{% if messages[0]['role'] == 'system' %}{% set loop_messages = messages[1:] %}{% set system_message = messages[0]['content'] %}{% else %}{% set loop_messages = messages %}{% set system_message = false %}{% endif %}{% for message in loop_messages %}{% if (message['role'] == 'user') != (loop.index0 % 2 == 0) %}{{ raise_exception('Conversation roles must alternate user/assistant/user/assistant/...') }}{% endif %}{% if loop.index0 == 0 and system_message != false %}{% set content = '<<SYS>>\\n' + system_message + '\\n<</SYS>>\\n\\n' + message['content'] %}{% else %}{% set content = message['content'] %}{% endif %}{% if message['role'] == 'user' %}{{ bos_token + '[INST] ' + content | trim + ' [/INST]' }}{% elif message['role'] == 'assistant' %}{{ ' '  + content | trim + ' ' + eos_token }}{% endif %}{% endfor %}"
-            assert tokenizer.eos_token_id is not None, (
-                tokenizer.eos_token_id,
-                tokenizer.eos_token,
-            )
+            
             new_batch = defaultdict(list)
             all_keys = list(batch.keys())
             for item_values in zip(*(batch[k] for k in all_keys)):
@@ -115,38 +112,46 @@ class BCTrainer(BaseTrainer):
 
                 input_ids = []
                 labels = []
+                
+                for i, message in enumerate(conversations):
+                    text = '<|im_start|>' + message["role"] + '\n' + message['content'] + '<|im_end|>' + '\n'
+                    input_encode = tokenizer.encode(text, add_special_tokens=False)
+                    
+                    if message["role"] == "assistant" and i>1:
+                        if message['reasoning_content']:
+                            text_temp = '<|im_start|>' + message["role"] + '\n<think>\n' + message['reasoning_content'].strip('\n') + '\n</think>\n\n' + message['content'].lstrip('\n') + '<|im_end|>\n'
+                            input_encode_temp = tokenizer.encode(text_temp, add_special_tokens=False)
+                            attention_mask = [1] * len(input_ids + input_encode_temp)
+                            
+                            ##
+                            new_batch["input_ids"].append(input_ids + input_encode_temp)
+                            new_batch["labels"].append(labels + input_encode_temp)
+                            new_batch["attention_mask"].append(attention_mask)
+                            new_batch["item_id"].append(item_id)
+                            new_batch["input_ids_max_length"].append(len(input_ids))
 
-                for message in conversations:
-                    if message["from"] == "human":
-                        text = f"<s>[INST] {message['value']} [/INST]"
-                        input_encode = tokenizer.encode(text, add_special_tokens=False)
-                        input_ids.extend(input_encode)
-                        labels.extend([-100] * len(input_encode))
-                    else:
-                        # message["from"] == "gpt":
-                        # text = f" {message['value']}</s>"
-                        text = f" {message['value']}"
-                        input_encode = tokenizer.encode(text, add_special_tokens=False)
-                        input_encode += [tokenizer.eos_token_id]
+                            ##
+                            labels = [-100] * len(labels)
+                            
+                        ##
                         input_ids.extend(input_encode)
                         labels.extend(input_encode)
+                        
+                    else:
+                        input_ids.extend(input_encode)
+                        labels.extend([-100] * len(input_encode))
+                        
+                    all_text += text
+                    
+                    if conversations[-1]['role'] == 'assistant' and not conversations[-1]['reasoning_content']:
+                        attention_mask = [1] * len(input_ids)
+                        new_batch["input_ids"].append(input_ids)
+                        new_batch["labels"].append(labels)
+                        new_batch["attention_mask"].append(attention_mask)
+                        new_batch["item_id"].append(item_id)
+                        new_batch["input_ids_max_length"].append(len(input_ids))
 
                 attention_mask = [1] * len(input_ids)
-
-                # Truncation
-                input_ids_max_length = len(input_ids)
-                # assert input_ids_max_length <= args['max_input_length'], input_ids_max_length
-                input_ids = input_ids[: args["max_input_length"]]
-                labels = labels[: args["max_input_length"]]
-                attention_mask = attention_mask[: args["max_input_length"]]
-
-                ##
-                new_batch["input_ids"].append(input_ids)
-                new_batch["labels"].append(labels)
-                new_batch["attention_mask"].append(attention_mask)
-                ##
-                new_batch["item_id"].append(item_id)
-                new_batch["input_ids_max_length"].append(input_ids_max_length)
 
             return new_batch
 
@@ -644,11 +649,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 @dataclass
 class TrainingArguments:
-    train_file: str = field(default="./dataset/train.json", metadata={"help": "Training dataset."})
+    train_file: str = field(default="./dataset/train_1.json", metadata={"help": "Training dataset."})
     inference_file: str = field(
-        default="./dataset/test.json", metadata={"help": "Inference dataset."}
+        default="./dataset/test_1.json", metadata={"help": "Inference dataset."}
     )
-    test_file: str = field(default="./dataset/test.json", metadata={"help": "Test dataset."})
+    test_file: str = field(default="./dataset/test_1.json", metadata={"help": "Test dataset."})
     # model path
     model_train_path: str = field(
         default="mrRL/Affine-ofdt-k4",
@@ -668,13 +673,13 @@ class TrainingArguments:
         ], metadata={"help": "Task name for evaluation"}
     )
     batch_size: int = field(
-        default=40,
+        default=1,
         metadata={"help": "Batch size for training."},
     )
     eval_batch_size: int = field(
-        default=8, metadata={"help": "Batch size for evaluation."}
+        default=1, metadata={"help": "Batch size for evaluation."}
     )
-    n_epochs: int = field(default=40)
+    n_epochs: int = field(default=10)
     num_workers: int = field(
         default=8, metadata={"help": "Number of subprocesses to use for data loading."}
     )
@@ -683,13 +688,13 @@ class TrainingArguments:
         default=1e-6, metadata={"help": "Weight decay for regularization."}
     )
     warmup_step: int = field(
-        default=0,
+        default=10,
         metadata={"help": "Number of warmup steps for learning rate scheduling."},
     )
     clip_grad_norm: float = field(
         default=1, metadata={"help": "Gradient clipping threshold."}
     )
-    gradient_accumulation_steps: int = field(default=1)
+    gradient_accumulation_steps: int = field(default=2)
     evaluating_epoch_freq: int = field(default=1)
     logging_epoch_freq: int = field(default=1)
     saving_epoch_freq: int = field(default=1)
@@ -725,8 +730,8 @@ def main():
 
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,   # you're using the model as an LM / policy
-        r=16,                           # rank of the low-rank matrices
-        lora_alpha=32,                  # scaling factor
+        r=8,                           # rank of the low-rank matrices
+        lora_alpha=16,                  # scaling factor
         lora_dropout=0.05,               # dropout in the LoRA layers
         target_modules=["q_proj", "v_proj"]  # or other module names to adapt
     )
