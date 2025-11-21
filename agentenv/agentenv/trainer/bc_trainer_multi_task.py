@@ -12,7 +12,7 @@ import torch
 import wandb
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.utils import broadcast, gather_object
-from agentenv.controller.agent import Agent
+from agentenv.controller.agent import Agent, ChatMLTemplate
 from agentenv.controller.task import BaseTask
 from agentenv.controller.utils import BaseTrainer
 from agentenv.trainer.utils import set_seed
@@ -113,13 +113,16 @@ class BCTrainer(BaseTrainer):
                 input_ids = []
                 labels = []
                 
+                if conversations[-1].get('role') == "user":
+                    conversations = conversations[:-1]
+                
                 for i, message in enumerate(conversations):
                     text = '<|im_start|>' + message["role"] + '\n' + message['content'] + '<|im_end|>' + '\n'
                     input_encode = tokenizer.encode(text, add_special_tokens=False)
                     
                     if message["role"] == "assistant" and i>1:
-                        if message['reasoning_content']:
-                            text_temp = '<|im_start|>' + message["role"] + '\n<think>\n' + message['reasoning_content'].strip('\n') + '\n</think>\n\n' + message['content'].lstrip('\n') + '<|im_end|>\n'
+                        if message.get('reasoning_content'):
+                            text_temp = '<|im_start|>' + message["role"] + '\n<think>\n' + message.get('reasoning_content').strip('\n') + '\n</think>\n\n' + message['content'].lstrip('\n') + '<|im_end|>\n'
                             input_encode_temp = tokenizer.encode(text_temp, add_special_tokens=False)
                             attention_mask = [1] * len(input_ids + input_encode_temp)
                             
@@ -141,9 +144,7 @@ class BCTrainer(BaseTrainer):
                         input_ids.extend(input_encode)
                         labels.extend([-100] * len(input_encode))
                         
-                    all_text += text
-                    
-                    if conversations[-1]['role'] == 'assistant' and not conversations[-1]['reasoning_content']:
+                    if i == len(conversations) - 1 and conversations[-1]['role'] == 'assistant' and not conversations[-1].get('reasoning_content'):
                         attention_mask = [1] * len(input_ids)
                         new_batch["input_ids"].append(input_ids)
                         new_batch["labels"].append(labels)
@@ -165,7 +166,7 @@ class BCTrainer(BaseTrainer):
                     },
                     batched=True,
                     remove_columns=self.raw_dataset["train"].column_names,
-                    num_proc=8,
+                    num_proc=self.args['num_workers'],
                     load_from_cache_file=False,
                 )
             }
@@ -451,9 +452,9 @@ class BCTrainer(BaseTrainer):
         os.makedirs(model_save_path, exist_ok=True)
         with tqdm(range(1, n_epochs + 1), total=n_epochs, disable=False) as t:
             for epoch in t:
-                train_epoch_result_dict, global_step = self.train_one_epoch(
-                    epoch, global_step
-                )
+                # train_epoch_result_dict, global_step = self.train_one_epoch(
+                #     epoch, global_step
+                # )
 
                 eval_log_dict = {}
                 is_best = False
@@ -479,37 +480,37 @@ class BCTrainer(BaseTrainer):
                         eval_log_dict["Eval.Gen.success"]
                     )
 
-                train_log_dict = {}
-                if logging_epoch_freq is not None and epoch % logging_epoch_freq == 0:
-                    train_log_dict = {
-                        f"T.{k}": sum(v) / len(v) if isinstance(v, list) else v
-                        for k, v in train_epoch_result_dict.items()
-                    }
+                # train_log_dict = {}
+                # if logging_epoch_freq is not None and epoch % logging_epoch_freq == 0:
+                #     train_log_dict = {
+                #         f"T.{k}": sum(v) / len(v) if isinstance(v, list) else v
+                #         for k, v in train_epoch_result_dict.items()
+                #     }
 
-                if train_log_dict or eval_log_dict:
-                    log_dict = {
-                        "lr": self.scheduler.get_last_lr()[0],
-                        **train_log_dict,
-                        **eval_log_dict,
-                        **self.best_eval_log_dict,
-                    }
-                    if self.accelerator.is_main_process and self.args["wandb_log"]:
-                        wandb.log(log_dict, step=global_step)
-                        log_dict = {
-                            "wandb": self.args["wandb_project"]
-                            + "|"
-                            + self.args["wandb_run_name"],
-                            **log_dict,
-                        }
-                    log_dict = {
-                        k: f"{v:.5g}" if isinstance(v, float) else v
-                        for k, v in log_dict.items()
-                    }
-                    self.accelerator.print(
-                        f"[E={epoch}/{self.args['n_epochs']}, S={global_step}] {log_dict}"
-                    )
+                # if train_log_dict or eval_log_dict:
+                #     log_dict = {
+                #         "lr": self.scheduler.get_last_lr()[0],
+                #         **train_log_dict,
+                #         **eval_log_dict,
+                #         **self.best_eval_log_dict,
+                #     }
+                #     if self.accelerator.is_main_process and self.args["wandb_log"]:
+                #         wandb.log(log_dict, step=global_step)
+                #         log_dict = {
+                #             "wandb": self.args["wandb_project"]
+                #             + "|"
+                #             + self.args["wandb_run_name"],
+                #             **log_dict,
+                #         }
+                #     log_dict = {
+                #         k: f"{v:.5g}" if isinstance(v, float) else v
+                #         for k, v in log_dict.items()
+                #     }
+                #     self.accelerator.print(
+                #         f"[E={epoch}/{self.args['n_epochs']}, S={global_step}] {log_dict}"
+                #     )
 
-                if saving_epoch_freq is not None and epoch % saving_epoch_freq == 0:
+                # if saving_epoch_freq is not None and epoch % saving_epoch_freq == 0:
                     # if is_best:
                     save_path = os.path.join(model_save_path, f"train_epoch_{epoch}")
                     self.save_model(self.agent.model, self.agent.tokenizer, save_path)
@@ -539,7 +540,7 @@ class BCTrainer(BaseTrainer):
 
             for index in batch["data_idxs"]:
                 for j in range(len(self.tasks)):
-                    if self.tasks[j].env_name == index["task"]:
+                    if self.tasks[j].env_name.lower() == index["task"]:
                         data_idxs[j].append(index["id"])
 
             self.accelerator.print("==== Batch inference data idxs ====", data_idxs)
@@ -673,15 +674,15 @@ class TrainingArguments:
         ], metadata={"help": "Task name for evaluation"}
     )
     batch_size: int = field(
-        default=1,
+        default=2,
         metadata={"help": "Batch size for training."},
     )
     eval_batch_size: int = field(
-        default=1, metadata={"help": "Batch size for evaluation."}
+        default=2, metadata={"help": "Batch size for evaluation."}
     )
     n_epochs: int = field(default=10)
     num_workers: int = field(
-        default=8, metadata={"help": "Number of subprocesses to use for data loading."}
+        default=1, metadata={"help": "Number of subprocesses to use for data loading."}
     )
     learning_rate: float = field(default=2e-5, metadata={"help": "Learning rate."})
     weight_decay: float = field(
@@ -700,11 +701,11 @@ class TrainingArguments:
     saving_epoch_freq: int = field(default=1)
     logging_step_freq: int = field(default=None)
     seed: int = field(default=42)
-    max_input_length: int = field(default=700)
+    max_input_length: int = field(default=5000)
 
     # environment
     max_round: int = field(
-        default=6,
+        default=20,
         metadata={"help": "Interaction rounds between agents and environment"},
     )
 
@@ -765,7 +766,10 @@ def main():
         task_class_list.append(task_class(client_args=env_args, n_clients=1))
 
     trainer = BCTrainer(
-        Agent(model, tokenizer),
+        Agent(
+            model=model, 
+            tokenizer=tokenizer,
+            chat_template=ChatMLTemplate()),
         task_class_list,
         args,
     )
