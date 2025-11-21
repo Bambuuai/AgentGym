@@ -584,8 +584,9 @@ class AlfWorldEnvClient(BaseEnvClient):
             "reward": response["reward"],
             "done": response["done"],
         }
+
         return StepOutput(
-            state=response["observation"],
+            state=f"{response['observation']}\nAVAILABLE ACTIONS: {','.join(response['available_actions'])}",
             reward=response["reward"],
             done=response["done"],
         )
