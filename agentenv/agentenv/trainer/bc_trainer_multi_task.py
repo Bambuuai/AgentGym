@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from torch.optim import AdamW
 from transformers import GenerationConfig, get_linear_schedule_with_warmup
-from peft import LoraConfig, get_peft_model, TaskType
+from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 
 
 class BCTrainer(BaseTrainer):
@@ -50,10 +50,10 @@ class BCTrainer(BaseTrainer):
         self.set_seed()
         # self.setup_tokenizer()
         self.get_raw_dataset()
-        # self.get_train_dataloader()
+        self.get_train_dataloader()
         self.get_inference_test_dataloader()
         self.setup_wandb()
-        # self.init_train_stuff()
+        self.init_train_stuff()
 
     def create_accelerator(self):
         """
@@ -713,7 +713,7 @@ class TrainingArguments:
     evaluating_epoch_freq: int = field(default=1)
     logging_epoch_freq: int = field(default=1)
     saving_epoch_freq: int = field(default=1)
-    logging_step_freq: int = field(default=None)
+    logging_step_freq: int = field(default=1)
     seed: int = field(default=42)
     max_input_length: int = field(default=4096)
 
@@ -790,7 +790,15 @@ def main():
 
     trainer.train()
 
-    model.save_pretrained()
+    model.save_pretrained("lora_adapter")
+    
+    
+    ##
+    # base_model = AutoModelForCausalLM.from_pretrained(args.model_train_path)
+    merged_output_path = "merged_model"
+    merged_model = model.merge_and_unload()
+    merged_model.save_pretrained(merged_output_path)
+
 
 if __name__ == "__main__":
     main()
