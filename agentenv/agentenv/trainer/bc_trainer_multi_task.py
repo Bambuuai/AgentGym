@@ -467,9 +467,9 @@ class BCTrainer(BaseTrainer):
         os.makedirs(model_save_path, exist_ok=True)
         with tqdm(range(1, n_epochs + 1), total=n_epochs, disable=False) as t:
             for epoch in t:
-                # train_epoch_result_dict, global_step = self.train_one_epoch(
-                #     epoch, global_step
-                # )
+                train_epoch_result_dict, global_step = self.train_one_epoch(
+                    epoch, global_step
+                )
 
                 eval_log_dict = {}
                 is_best = False
@@ -495,41 +495,41 @@ class BCTrainer(BaseTrainer):
                         eval_log_dict["Eval.Gen.success"]
                     )
 
-                # train_log_dict = {}
-                # if logging_epoch_freq is not None and epoch % logging_epoch_freq == 0:
-                #     train_log_dict = {
-                #         f"T.{k}": sum(v) / len(v) if isinstance(v, list) else v
-                #         for k, v in train_epoch_result_dict.items()
-                #     }
+                train_log_dict = {}
+                if logging_epoch_freq is not None and epoch % logging_epoch_freq == 0:
+                    train_log_dict = {
+                        f"T.{k}": sum(v) / len(v) if isinstance(v, list) else v
+                        for k, v in train_epoch_result_dict.items()
+                    }
 
-                # if train_log_dict or eval_log_dict:
-                #     log_dict = {
-                #         "lr": self.scheduler.get_last_lr()[0],
-                #         **train_log_dict,
-                #         **eval_log_dict,
-                #         **self.best_eval_log_dict,
-                #     }
-                #     if self.accelerator.is_main_process and self.args["wandb_log"]:
-                #         wandb.log(log_dict, step=global_step)
-                #         log_dict = {
-                #             "wandb": self.args["wandb_project"]
-                #             + "|"
-                #             + self.args["wandb_run_name"],
-                #             **log_dict,
-                #         }
-                #     log_dict = {
-                #         k: f"{v:.5g}" if isinstance(v, float) else v
-                #         for k, v in log_dict.items()
-                #     }
-                #     self.accelerator.print(
-                #         f"[E={epoch}/{self.args['n_epochs']}, S={global_step}] {log_dict}"
-                #     )
+                if train_log_dict or eval_log_dict:
+                    log_dict = {
+                        "lr": self.scheduler.get_last_lr()[0],
+                        **train_log_dict,
+                        **eval_log_dict,
+                        **self.best_eval_log_dict,
+                    }
+                    if self.accelerator.is_main_process and self.args["wandb_log"]:
+                        wandb.log(log_dict, step=global_step)
+                        log_dict = {
+                            "wandb": self.args["wandb_project"]
+                            + "|"
+                            + self.args["wandb_run_name"],
+                            **log_dict,
+                        }
+                    log_dict = {
+                        k: f"{v:.5g}" if isinstance(v, float) else v
+                        for k, v in log_dict.items()
+                    }
+                    self.accelerator.print(
+                        f"[E={epoch}/{self.args['n_epochs']}, S={global_step}] {log_dict}"
+                    )
 
-                # if saving_epoch_freq is not None and epoch % saving_epoch_freq == 0:
-                #     if is_best:
-                #         save_path = os.path.join(model_save_path, f"train_epoch_{epoch}")
-                #         self.save_model(self.agent.model, self.agent.tokenizer, save_path)
-                #         self.agent.model = self.accelerator.unwrap_model(self.agent.model)
+                if saving_epoch_freq is not None and epoch % saving_epoch_freq == 0:
+                    if is_best:
+                        save_path = os.path.join(model_save_path, f"train_epoch_{epoch}")
+                        self.save_model(self.agent.model, self.agent.tokenizer, save_path)
+                        self.agent.model = self.accelerator.unwrap_model(self.agent.model)
 
     def eval_test_dataloader(
         self,
