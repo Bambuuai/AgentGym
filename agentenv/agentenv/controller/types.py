@@ -46,6 +46,7 @@ class ExperienceOutput:
     seq_ids: list[int]
     attention_mask: list[int]
     action_mask: list[int]
+    item_id: str
 
 
 @dataclass
@@ -63,8 +64,8 @@ class ActionWithTought:
 @dataclass
 class EvaluationOutput:
     experiences: list[ExperienceOutput]
-    score: float
-    success: float
+    # score: float | Sequence[float]
+    # success: float | Sequence 
 
 
 @dataclass

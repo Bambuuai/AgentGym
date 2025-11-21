@@ -138,6 +138,7 @@ class BaseTask:
                 seq_ids=conversation_tokenized["input_ids"],
                 attention_mask=[1] * len(conversation_tokenized["input_ids"]),
                 action_mask=conversation_tokenized["action_mask"],
+                item_id=f"{self.env_name}_{idx}"
             )
         elif isinstance(agent, APIAgent):
             return APIExperienceOutput(

@@ -50,10 +50,10 @@ class BCTrainer(BaseTrainer):
         self.set_seed()
         # self.setup_tokenizer()
         self.get_raw_dataset()
-        self.get_train_dataloader()
+        # self.get_train_dataloader()
         self.get_inference_test_dataloader()
         self.setup_wandb()
-        self.init_train_stuff()
+        # self.init_train_stuff()
 
     def create_accelerator(self):
         """
@@ -74,9 +74,8 @@ class BCTrainer(BaseTrainer):
         with self.accelerator.main_process_first():
             self.raw_dataset = DatasetDict(
                 {
-                    "train": Dataset.from_list(
-                        json.load(open(self.args["train_file"], "r"))
-                    ),
+                    "train": Dataset.from_list([json.loads(line) 
+                             for line in open(self.args["train_file"])]),
                     "inference": Dataset.from_list(
                         json.load(open(self.args["inference_file"], "r"))
                     ),
@@ -276,6 +275,7 @@ class BCTrainer(BaseTrainer):
         # os.environ["WANDB_MODE"] = "offline"
         if self.args["wandb_log"]:
             wandb.init(
+                entity="hongyuxiao05-lambda",
                 project=self.args["wandb_project"],
                 name=self.args["wandb_run_name"],
             )
@@ -526,10 +526,10 @@ class BCTrainer(BaseTrainer):
                 #     )
 
                 # if saving_epoch_freq is not None and epoch % saving_epoch_freq == 0:
-                    # if is_best:
-                    save_path = os.path.join(model_save_path, f"train_epoch_{epoch}")
-                    self.save_model(self.agent.model, self.agent.tokenizer, save_path)
-                    self.agent.model = self.accelerator.unwrap_model(self.agent.model)
+                #     if is_best:
+                #         save_path = os.path.join(model_save_path, f"train_epoch_{epoch}")
+                #         self.save_model(self.agent.model, self.agent.tokenizer, save_path)
+                #         self.agent.model = self.accelerator.unwrap_model(self.agent.model)
 
     def eval_test_dataloader(
         self,
@@ -604,7 +604,7 @@ class BCTrainer(BaseTrainer):
                             conversation = exp.conversation
                             cur_reward = exp.reward
                             cur_success = 1 if exp.reward == 1 else 0
-                            item_id = f"{self.args['task_name']}_{cur_idx}"
+                            item_id = exp.item_id
                             f.write(
                                 {
                                     "conversations": conversation,
@@ -664,7 +664,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 @dataclass
 class TrainingArguments:
-    train_file: str = field(default="./dataset/total.json", metadata={"help": "Training dataset."})
+    train_file: str = field(default="./dataset/total.jsonl", metadata={"help": "Training dataset."})
     inference_file: str = field(
         default="./dataset/test_1.json", metadata={"help": "Inference dataset."}
     )
@@ -724,7 +724,7 @@ class TrainingArguments:
     )
 
     # wandb stuff
-    wandb_log: bool = field(default=False)
+    wandb_log: bool = field(default=True)
     wandb_project: str = field(default="AgentGym_behavioral_clone")
     wandb_run_name: str = field(default="behavioral_clone")
 
