@@ -131,6 +131,9 @@ class BCTrainer(BaseTrainer):
                             "item_id": item_id,
                             "input_ids_max_length": len(input_ids), # This is the length before the current assistant turn
                         })
+                        
+                        assert any(x > 0 for x in full_input_ids)
+                        assert any(x > 0 for x in attention_mask)
 
                         # Reset labels for the *next* turn of the conversation to -100 (for the *previous* turns)
                         # This ensures the model is only trained on the current assistant response *in the next step*.
@@ -159,6 +162,10 @@ class BCTrainer(BaseTrainer):
                         "item_id": item_id,
                         "input_ids_max_length": len(input_ids), # Using current length as a placeholder; typically used to find the split point.
                     })
+                    
+                    assert any(x > 0 for x in input_ids)
+                    assert any(x > 0 for x in attention_mask)
+
                     
             return tokenized_examples
 
@@ -318,20 +325,19 @@ class BCTrainer(BaseTrainer):
             if self.args["warmup_step"] is not None and self.args["warmup_step"] >= 0
             else int(0.1 * num_training_steps)
         )
+
         optimizer_grouped_parameters = [
             {
                 "params": [
-                    p
-                    for n, p in self.agent.model.named_parameters()
-                    if not any(nd in n for nd in ["bias", "LayerNorm.weight"])
+                    p for n, p in self.agent.model.named_parameters()
+                    if p.requires_grad and not any(nd in n for nd in ["bias", "LayerNorm.weight"])
                 ],
                 "weight_decay": self.args["weight_decay"],
             },
             {
                 "params": [
-                    p
-                    for n, p in self.agent.model.named_parameters()
-                    if any(nd in n for nd in ["bias", "LayerNorm.weight"])
+                    p for n, p in self.agent.model.named_parameters()
+                    if p.requires_grad and any(nd in n for nd in ["bias", "LayerNorm.weight"])
                 ],
                 "weight_decay": 0.0,
             },
@@ -582,13 +588,13 @@ class BCTrainer(BaseTrainer):
                 cur_batch_success = torch.FloatTensor(
                     [1 if exp.reward == 1 else 0 for exp in exps.experiences]
                 ).to(self.accelerator.device)
-                cur_batch_data_idx = torch.tensor(data_idxs).to(self.accelerator.device)
+                # cur_batch_data_idx = torch.tensor(data_idxs).to(self.accelerator.device)
                 
                 # gather operation
                 all_device_batch_rewards = self.accelerator.gather(cur_batch_rewards)
                 all_device_batch_success = self.accelerator.gather(cur_batch_success)
                 all_device_batch_exp = gather_object(exps.experiences)
-                all_device_data_idx = self.accelerator.gather(cur_batch_data_idx)
+                # all_device_data_idx = self.accelerator.gather(cur_batch_data_idx)
                 all_rewards.extend(all_device_batch_rewards.cpu().numpy().tolist())
                 all_success.extend(all_device_batch_success.cpu().numpy().tolist())
                 
@@ -600,7 +606,7 @@ class BCTrainer(BaseTrainer):
                     )
                     with jsonlines.open(inference_file_path, mode="a") as f:
                         for idx, exp in enumerate(all_device_batch_exp):
-                            cur_idx = all_device_data_idx[idx]
+                            # cur_idx = all_device_data_idx[idx]
                             conversation = exp.conversation
                             cur_reward = exp.reward
                             cur_success = 1 if exp.reward == 1 else 0
@@ -668,7 +674,7 @@ class TrainingArguments:
     inference_file: str = field(
         default="./dataset/test_1.json", metadata={"help": "Inference dataset."}
     )
-    test_file: str = field(default="./dataset/test_1.json", metadata={"help": "Test dataset."})
+    test_file: str = field(default="./dataset/test_exp.json", metadata={"help": "Test dataset."})
     # model path
     model_train_path: str = field(
         default="mrRL/Affine-ofdt-k4",
@@ -694,11 +700,11 @@ class TrainingArguments:
     eval_batch_size: int = field(
         default=2, metadata={"help": "Batch size for evaluation."}
     )
-    n_epochs: int = field(default=10)
+    n_epochs: int = field(default=2)
     num_workers: int = field(
         default=1, metadata={"help": "Number of subprocesses to use for data loading."}
     )
-    learning_rate: float = field(default=2e-5, metadata={"help": "Learning rate."})
+    learning_rate: float = field(default=5e-6, metadata={"help": "Learning rate."})
     weight_decay: float = field(
         default=1e-6, metadata={"help": "Weight decay for regularization."}
     )
@@ -709,7 +715,7 @@ class TrainingArguments:
     clip_grad_norm: float = field(
         default=1, metadata={"help": "Gradient clipping threshold."}
     )
-    gradient_accumulation_steps: int = field(default=2)
+    gradient_accumulation_steps: int = field(default=8)
     evaluating_epoch_freq: int = field(default=1)
     logging_epoch_freq: int = field(default=1)
     saving_epoch_freq: int = field(default=1)
@@ -754,6 +760,10 @@ def main():
     model.gradient_checkpointing_enable()
 
     model = get_peft_model(model, lora_config)
+    
+    # Freeze all base model parameters
+    for param in model.base_model.parameters():  # use .base_model if using PEFT
+        param.requires_grad = False
 
     # task_name - task dict
     task_classes = {
